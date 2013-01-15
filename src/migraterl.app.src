@@ -1,0 +1,12 @@
+{application, migraterl,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { migraterl_app, []}},
+  {env, []}
+ ]}.
