@@ -48,19 +48,19 @@ start_link() ->
 %% @end
 %%--------------------------------------------------------------------
 migrate_module(Modulename, Dest) ->
-    migrate_module(Modulename, Dest, true).
+    migrate_module(Modulename, Dest, [mapcalls]).
 
 %%--------------------------------------------------------------------
 %% @doc
 %% Migrates a module with Modulename from the current node to Dest. If
-%% MapCalls is set to true the local function will be remapped to use
+%% Options contains 'map_calls' the local function will be remapped to use
 %% RPC calls to Dest.
 %%
-%% @spec migrate_module(Modulename :: atom(), Dest :: atom(), MapCalls :: boolean()) -> ok
+%% @spec migrate_module(Modulename :: atom(), Dest :: atom(), Options :: proplist()) -> ok
 %% @end
 %%--------------------------------------------------------------------
-migrate_module(Modulename, Dest, MapCalls) ->
-    gen_server:call(?SERVER, {migrate_module, Modulename, Dest, MapCalls}).
+migrate_module(Modulename, Dest, Options) ->
+    gen_server:call(?SERVER, {migrate_module, Modulename, Dest, Options}).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -94,7 +94,7 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call({migrate_module, Modulename, Dest, MapCalls}, _From, State) ->
+handle_call({migrate_module, Modulename, Dest, Options}, _From, State) ->
     %% First we get the binary code from the module
     {Modulename, OrgBinary, _} = code:get_object_code(Modulename),
 
@@ -112,11 +112,11 @@ handle_call({migrate_module, Modulename, Dest, MapCalls}, _From, State) ->
         {ok, Modulename, GenBinary} ->
             %% Mark the local module as old
             [ {code:purge(Modulename),
-               {module, Modulename} = code:load_binary(Modulename, "migraterl", GenBinary)} || MapCalls ];
+               {module, Modulename} = code:load_binary(Modulename, "migraterl", GenBinary)} || proplists:get_value(map_calls, Options) ];
         {ok, Modulename, GenBinary, _Warnings} ->
             %% Mark the local module as old
             [ {code:purge(Modulename),
-              {module, Modulename} = code:load_binary(Modulename, "migraterl", GenBinary)} || MapCalls ]
+              {module, Modulename} = code:load_binary(Modulename, "migraterl", GenBinary)} || proplists:get_value(map_calls, Options) ]
     end,
     {reply, ok, State}.
 
