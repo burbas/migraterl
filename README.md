@@ -5,7 +5,7 @@ In order to build Migraterl please use Rebar.
 
 # Usage
 
-The following call will copy the `test` script to the destination node `'test2@localhost'`. `test:test()` will return
+The following call will copy the `test` module to the destination node `'test2@localhost'`. `test:test()` will return
 the name of the node it's running on.
 
      (test@localhost)1> test:test().
