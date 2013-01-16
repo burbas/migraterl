@@ -1,5 +1,5 @@
 # Build
-In order to build MicroC please use Rebar.
+In order to build Migraterl please use Rebar.
 
     ./rebar compile
 
