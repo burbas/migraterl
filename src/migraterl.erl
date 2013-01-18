@@ -17,6 +17,10 @@
          migrate_module/3,
          migrate_application/2,
          migrate_application/3,
+         migrate_back_module/2,
+         migrate_back_module/3,
+         migrate_back_application/2,
+         migrate_back_application/3
         ]).
 
 %% gen_server callbacks
@@ -97,6 +101,64 @@ migrate_module(Modulename, Dest) ->
 migrate_module(Modulename, Dest, Options) ->
     gen_server:call(?SERVER, {migrate_module, Modulename, Dest, Options}).
 
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Moves an application from a remote node to the current one.
+%% Same as migrate_back_application(Modulename, Source, [map_calls])
+%%
+%% @spec migrate_back_application(Modulename :: atom(), Source :: atom()) -> ok | {error, Reason}
+%% @end
+%%--------------------------------------------------------------------
+migrate_back_application(Application, Source) ->
+    migrate_back_application(Application, Source, [map_calls]).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Moves an application from a remote node to the current one.
+%% If 'map_calls' is present in the Options all functions in the modules
+%% belonging to the application will be remapped with RPC calls to this node.
+%%
+%% @spec migrate_back_application(Modulename :: atom(), Source :: atom(), Options :: proplist()) -> ok | {error, Reason}
+%% @end
+%%--------------------------------------------------------------------
+migrate_back_application(Application, Source, Options) ->
+    case rpc:call(Source, application, get_key, [Application, modules]) of
+        undefined ->
+            {error, application_not_found};
+        {ok, Modules} ->
+            [ migrate_back_module(Modulename, Source, Options) || Modulename <- Modules ],
+            Appfile = erlang:atom_to_list(Application) ++ ".app",
+            Filename = rpc:call(Source, code, where_is_file, [Appfile]),
+            {ok, Content} = rpc:call(Source, file, read_file, [Filename]),
+            file:write_file(Appfile, Content),
+            application:start(Application)
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Moves a module from a remote node to the current one.
+%% Same as migrate_back_module(Modulename, Source, [map_calls])
+%%
+%% @spec migrate_back_module(Modulename :: atom(), Source :: atom()) -> ok | {error, Reason}
+%% @end
+%%--------------------------------------------------------------------
+migrate_back_module(Modulename, Source) ->
+    migrate_back_module(Modulename, Source, [map_calls]).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Moves a module from a remote node to the current one.
+%% If 'map_calls' is present in Options all functions of the remote module will be remapped
+%% to use RPC:call to this node.
+%%
+%% @spec migrate_back_module(Modulename :: atom(), Source :: atom()) -> ok | {error, Reason}
+%% @end
+%%--------------------------------------------------------------------
+migrate_back_module(Modulename, Source, Options) ->
+    gen_server:call(?SERVER, {migrate_back_module, Modulename, Source, Options}).
+
+
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
@@ -154,7 +216,30 @@ handle_call({migrate_module, Modulename, Dest, Options}, _From, State) ->
     end,
 
     {reply, ok, State};
+
+handle_call({migrate_back_module, Modulename, Source, Options}, _From, State) ->
+    %% Load the binary code from the source-node
+    {Modulename, OrgBinary, _} = rpc:call(Source, code, get_object_code, [Modulename]),
+
+    %% Get all exports
+    ModuleInfo = rpc:call(Source, Modulename, module_info, []),
+    Exports = proplists:get_value(exports, ModuleInfo),
+
+    %% Purge the module on current node
+    code:purge(Modulename),
+
+    %% Load the module
+    erlang:load_module(Modulename, OrgBinary),
+
+    {ok, Modulename, GenBinary} = generate_migration_code(Modulename, Exports, node()),
+    case proplists:get_value(map_calls, Options) of
+        true ->
+            rpc:call(Source, code, purge, [Modulename]),
+            rpc:call(Source, erlang, load_binary, [Modulename, "migraterl", GenBinary]);
+        _ ->
+            ok
     end,
+
     {reply, ok, State}.
 
 %%--------------------------------------------------------------------
