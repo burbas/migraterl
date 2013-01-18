@@ -14,7 +14,9 @@
 -export([
          start_link/0,
          migrate_module/2,
-         migrate_module/3
+         migrate_module/3,
+         migrate_application/2,
+         migrate_application/3,
         ]).
 
 %% gen_server callbacks
@@ -39,16 +41,49 @@
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Migrates an application from the current node to Dest.
+%% Same as migrate_application(Application, Dest, [map_calls])
+%%
+%% @spec migrate_application(Application :: atom(), Dest :: atom()) -> ok | {error, Reason}
+%% @end
+%%--------------------------------------------------------------------
+migrate_application(Application, Dest) ->
+    migrate_application(Application, Dest, [map_calls]).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Migrates an application from the current node to Dest with a set
+%% of Options.
+%%
+%% @spec migrate_application(Application :: atom(), Dest :: atom(), Options :: proplist()) ->
+%%                                                                        ok | {error, Reason}
+%% @end
+%%--------------------------------------------------------------------
+migrate_application(Application, Dest, Options) ->
+    case application:get_key(Application, modules) of
+        undefined ->
+            {error, application_not_found};
+        {ok, Modules} ->
+            [ migrate_module(Modulename, Dest, Options) || Modulename <- Modules ],
+            Appfile = erlang:atom_to_list(Application) ++ ".app",
+            {ok, Content} = file:read_file(code:where_is_file(Appfile)),
+            rpc:call(Dest, file, write_file, [Appfile, Content]),
+            rpc:call(Dest, application, start, [Application])
+    end.
+
 %%--------------------------------------------------------------------
 %% @doc
 %% Migrates a module with Modulename from the current node to Dest.
-%% Same as migrate_module(Modulename, Dest, true)
+%% Same as migrate_module(Modulename, Dest, [map_calls])
 %%
 %% @spec migrate_module(Modulename :: atom(), Dest :: atom()) -> ok
 %% @end
 %%--------------------------------------------------------------------
 migrate_module(Modulename, Dest) ->
-    migrate_module(Modulename, Dest, [mapcalls]).
+    migrate_module(Modulename, Dest, [map_calls]).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -108,15 +143,17 @@ handle_call({migrate_module, Modulename, Dest, Options}, _From, State) ->
     {module, Modulename} = rpc:call(Dest, erlang, load_module, [Modulename, OrgBinary]),
 
     %% See if we can generate the code
-    case generate_migration_code(Modulename, Exports, Dest) of
-        {ok, Modulename, GenBinary} ->
+    {ok, Modulename, GenBinary} = generate_migration_code(Modulename, Exports, Dest),
+    case proplists:get_value(map_calls, Options) of
+        true ->
             %% Mark the local module as old
-            [ {code:purge(Modulename),
-               {module, Modulename} = code:load_binary(Modulename, "migraterl", GenBinary)} || proplists:get_value(map_calls, Options) ];
-        {ok, Modulename, GenBinary, _Warnings} ->
-            %% Mark the local module as old
-            [ {code:purge(Modulename),
-              {module, Modulename} = code:load_binary(Modulename, "migraterl", GenBinary)} || proplists:get_value(map_calls, Options) ]
+            code:purge(Modulename),
+            {module, Modulename} = code:load_binary(Modulename, "migraterl", GenBinary);
+        _ ->
+            ok
+    end,
+
+    {reply, ok, State};
     end,
     {reply, ok, State}.
 
@@ -185,13 +222,13 @@ generate_migration_code(Modulename, Exports, Destination) ->
                                             erl_syntax:integer(FunArity)) || {FunName, FunArity} <- Exports, FunName /= module_info ]
                                        )]),
 
-    FunctionsAST = [ generate_function({FunName, FunArity}, Modulename, Destination) || {FunName, FunArity} <- Exports, FunName /= module_info ],
+    FunctionsAST = [ generate_rpc_function({FunName, FunArity}, Modulename, Destination) || {FunName, FunArity} <- Exports, FunName /= module_info ],
 
     Forms = [ erl_syntax:revert(AST) || AST <- [ModuleAST, ExportAST | FunctionsAST] ],
 
-    compile:forms(Forms).
+    compile:forms(Forms, []).
 
-generate_function({FunctionName, Arity}, Modulename, Destination) ->
+generate_rpc_function({FunctionName, Arity}, Modulename, Destination) ->
     Args = [ erl_syntax:variable(erlang:integer_to_list(X)) || X <- lists:seq(1, Arity) ],
 
     erl_syntax:function(erl_syntax:atom(FunctionName),
